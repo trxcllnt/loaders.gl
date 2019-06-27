@@ -1,15 +1,17 @@
 /* global fetch */
 import React, {PureComponent} from 'react';
 import {render} from 'react-dom';
-import DeckGL from '@deck.gl/react';
 import {StaticMap} from 'react-map-gl';
+import DeckGL from '@deck.gl/react';
+import {COORDINATE_SYSTEM, MapController} from '@deck.gl/core';
+// import '@loaders.gl/polyfills';
+// import '@luma.gl/debug';
 
-import '@loaders.gl/polyfills';
-import Tileset3DLayer from './tileset-3d-layer';
+import Tile3DLayer from './tile-3d-layer';
 
 import ControlPanel from './components/control-panel';
-// import fileDrop from './components/file-drop';
-import {COORDINATE_SYSTEM} from '@deck.gl/core';
+import fileDrop from './components/file-drop';
+import {updateStatWidgets} from './components/stats-widgets';
 
 const DATA_URI = 'https://raw.githubusercontent.com/uber-web/loaders.gl/master';
 const INDEX_FILE = `${DATA_URI}/modules/3d-tiles/test/data/index.json`;
@@ -17,6 +19,13 @@ const INDEX_FILE = `${DATA_URI}/modules/3d-tiles/test/data/index.json`;
 // Set your mapbox token here
 const MAPBOX_TOKEN = process.env.MapboxAccessToken; // eslint-disable-line
 const MAPBOX_STYLE = 'mapbox://styles/mapbox/light-v9';
+
+// const INITIAL_EXAMPLE_CATEGORY = 'additional';
+// const INITIAL_EXAMPLE_NAME = 'royalExhibitionBuilding';
+// const INITIAL_EXAMPLE_CATEGORY = 'Instanced';
+// const INITIAL_EXAMPLE_NAME = 'InstancedGltfExternal';
+const INITIAL_EXAMPLE_CATEGORY = 'PointCloud';
+const INITIAL_EXAMPLE_NAME = 'PointCloudRGB';
 
 const ADDITIONAL_EXAMPLES = {
   name: 'additional',
@@ -27,7 +36,8 @@ const ADDITIONAL_EXAMPLES = {
       coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
       coordinateOrigin: [144.97212, -37.805177],
       isWGS84: false,
-      depthLimit: 5,
+      // depthLimit: 5,
+      depthLimit: 2, // TODO: Remove this after sse traversal is working since this is just to prevent full load of tileset
       color: [115, 101, 152, 200]
     }
   }
@@ -57,65 +67,72 @@ export default class App extends PureComponent {
       batchTable: null,
       droppedFile: null,
       examplesByCategory: null,
-      tileset3dLayerProps: {},
-      name: 'royalExhibitionBuilding',
-      category: 'additional'
+      tilesetExampleProps: {},
+      category: INITIAL_EXAMPLE_CATEGORY,
+      name: INITIAL_EXAMPLE_NAME,
+
+      // stats (TODO should be managed by Tileset3D)
+      tileCount: 0,
+      pointCount: 0
     };
 
     this._deckRef = null;
   }
 
-  componentDidMount() {
-    // fileDrop(this._deckRef.deckCanvas, (promise, file) => {
-    //   this.setState({ droppedFile: file, tile: null });
-    // load(promise, Tile3DLoader).then(this._onLoad);
-    // });
+  async componentDidMount() {
+    fileDrop(this._deckRef.deckCanvas, (promise, file) => {
+      // eslint-disable-next-line
+      alert('File drop of tilesets not yet implemented');
+      // this.setState({ droppedFile: file, tile: null });
+      // load(promise, Tile3DLoader).then(this._onLoad);
+    });
 
-    this._loadIndexAndDefaultTileset();
+    await this._loadExampleIndex();
+    await this._loadInitialTileset();
   }
 
-  async _loadIndexAndDefaultTileset() {
+  async _loadExampleIndex() {
     // load the index file that lists example tilesets
     const response = await fetch(INDEX_FILE);
     const data = await response.json();
     this.setState({
       examplesByCategory: {
         ...data,
-        additional: ADDITIONAL_EXAMPLES
+        additional: ADDITIONAL_EXAMPLES,
+        custom: {
+          name: 'Custom',
+          examples: {
+            'Custom Tileset': {}
+          }
+        }
       }
     });
-
-    // load the default tileset
-    const {category, name} = this.state;
-    await this._loadSelectedTileset(category, name);
   }
 
-  async _loadSelectedTileset(category, name) {
+  async _loadInitialTileset() {
+    const tilesetUrl = this._getTilesetUrlFromSearchParams();
+    if (tilesetUrl) {
+      // load the tileset specified in the URL
+      await this._loadTilesetFromUrl(tilesetUrl);
+    } else {
+      // load the default example tileset
+      const {category, name} = this.state;
+      await this._loadExampleTileset(category, name);
+    }
+  }
+
+  async _loadExampleTileset(category, name) {
     const {examplesByCategory} = this.state;
 
     let tilesetUrl;
-    let tileset3dLayerProps = {};
+    let tilesetExampleProps;
     if (category === 'additional') {
-      tileset3dLayerProps = ADDITIONAL_EXAMPLES.examples[name];
-      const {coordinateOrigin} = tileset3dLayerProps;
-      this.setState({
-        viewState: {
-          ...this.state.viewState,
-          longitude: coordinateOrigin[0],
-          latitude: coordinateOrigin[1]
-        }
-      });
+      tilesetExampleProps = ADDITIONAL_EXAMPLES.examples[name];
     } else {
-      this.setState({
-        viewState: {
-          ...this.state.viewState,
-          ...EXAMPLES_VIEWSTATE
-        }
-      });
       const selectedExample = examplesByCategory[category].examples[name];
       if (selectedExample && selectedExample.tileset) {
         tilesetUrl = `${DATA_URI}/${selectedExample.path}/${selectedExample.tileset}`;
-        tileset3dLayerProps = {
+        tilesetExampleProps = {
           tilesetUrl,
           isWGS84: true
         };
@@ -123,29 +140,94 @@ export default class App extends PureComponent {
     }
 
     this.setState({
-      tileset3dLayerProps
+      tilesetExampleProps
+    });
+
+    // The "Additional" examples can contain a coordinate origin
+    const {coordinateOrigin} = tilesetExampleProps;
+    if (coordinateOrigin) {
+      this.setState({
+        viewState: {
+          ...this.state.viewState,
+          longitude: coordinateOrigin[0],
+          latitude: coordinateOrigin[1]
+        }
+      });
+    }
+  }
+
+  _getTilesetUrlFromSearchParams() {
+    /* global URL */
+    const parsedUrl = new URL(window.location.href);
+    const tilesetUrl = parsedUrl.searchParams.get('tileset');
+    return tilesetUrl;
+  }
+
+  async _loadTilesetFromUrl(tilesetUrl) {
+    this.setState({
+      tilesetExampleProps: {
+        tilesetUrl
+      },
+      category: 'custom',
+      name: 'Custom Tileset'
     });
   }
 
   // CONTROL PANEL
   async _onSelectExample({category, name}) {
     this.setState({category, name});
-    await this._loadSelectedTileset(category, name);
+    await this._loadExampleTileset(category, name);
   }
 
   _renderControlPanel() {
-    const {examplesByCategory, category, name} = this.state;
+    const {examplesByCategory, category, name, viewState} = this.state;
     if (!examplesByCategory) {
       return null;
     }
+
     return (
       <ControlPanel
         data={examplesByCategory}
         category={category}
         name={name}
         onChange={this._onSelectExample.bind(this)}
-      />
+      >
+        <div>
+          Loaded {this.state.tileCount | 0} tiles {(this.state.pointCount / 1e6).toFixed(2)} M
+          points
+        </div>
+        <div>
+          {' '}
+          {viewState.longitude.toFixed(5)} {viewState.latitude.toFixed(5)} {viewState.zoom}{' '}
+        </div>
+      </ControlPanel>
     );
+  }
+
+  _onTileLoaded(tileHeader) {
+    const {name} = this.state;
+    // cannot parse the center from royalExhibitionBuilding dataset
+    if (tileHeader.depth === 0 && name !== 'royalExhibitionBuilding') {
+      const {center} = tileHeader.boundingVolume;
+      if (!center) {
+        // eslint-disable-next-line
+        console.warn('center was not pre-calculated for the root tile');
+      } else {
+        this.setState({
+          viewState: {
+            ...this.state.viewState,
+            longitude: center[0],
+            latitude: center[1]
+          }
+        });
+      }
+    }
+
+    const pointCount = tileHeader.content.pointsLength || 0;
+    this.setState({
+      tileCount: this.state.tileCount + 1,
+      pointCount: this.state.pointCount + pointCount
+    });
   }
 
   // MAIN
@@ -155,26 +237,27 @@ export default class App extends PureComponent {
   }
 
   _renderLayer() {
-    const {tileset3dLayerProps} = this.state;
+    const {tilesetExampleProps} = this.state;
     const {
       tilesetUrl,
       coordinateSystem,
       coordinateOrigin,
       isWGS84,
-      depthLimit,
-      color
-    } = tileset3dLayerProps;
+      depthLimit = 5,
+      color = [255, 0, 0, 255]
+    } = tilesetExampleProps;
     return (
-      tileset3dLayerProps &&
-      new Tileset3DLayer({
-        id: 'tileset-layer',
+      tilesetExampleProps &&
+      new Tile3DLayer({
+        id: 'tile-3d-layer',
         tilesetUrl,
         coordinateSystem,
         coordinateOrigin,
         isWGS84,
         depthLimit,
         color,
-        onTileLoaded: tileHeader => this.forceUpdate()
+        onTileLoaded: this._onTileLoaded.bind(this),
+        onTilesetLoaded: () => this.forceUpdate()
       })
     );
   }
@@ -192,14 +275,10 @@ export default class App extends PureComponent {
           initialViewState={INITIAL_VIEW_STATE}
           viewState={viewState}
           onViewStateChange={this._onViewStateChange.bind(this)}
-          controller={true}
+          controller={{type: MapController, maxPitch: 85}}
+          onAfterRender={() => updateStatWidgets()}
         >
-          <StaticMap
-            reuseMaps
-            mapStyle={MAPBOX_STYLE}
-            preventStyleDiffing={true}
-            mapboxApiAccessToken={MAPBOX_TOKEN}
-          />
+          <StaticMap mapStyle={MAPBOX_STYLE} mapboxApiAccessToken={MAPBOX_TOKEN} />
         </DeckGL>
       </div>
     );
